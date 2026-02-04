@@ -159,6 +159,80 @@
         margin-top: 0.5rem;
         color: var(--muted);
       }
+      .timeline {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        height: 36px;
+        border-radius: 999px;
+        overflow: hidden;
+        margin: 2rem 0 1.5rem;
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .session {
+        display: grid;
+        place-items: center;
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .asia {
+        background: rgba(56, 189, 248, 0.15);
+      }
+      .london {
+        background: rgba(74, 222, 128, 0.15);
+      }
+      .ny {
+        background: rgba(244, 114, 182, 0.15);
+      }
+
+      .now-marker {
+        position: absolute;
+        top: -6px;
+        width: 2px;
+        height: 48px;
+        background: var(--accent);
+      }
+
+      .killzones {
+        display: grid;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .kz {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.75rem 1rem;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        font-size: 0.85rem;
+      }
+
+      .kz.active {
+        box-shadow: 0 0 18px rgba(216, 255, 164, 0.35);
+        color: var(--accent);
+      }
+
+      .next-open {
+        text-align: center;
+      }
+
+      .next-open .label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .next-open .time {
+        margin-top: 0.25rem;
+        font-size: 1.4rem;
+        color: var(--accent);
+      }
     </style>
   </head>
 
@@ -167,6 +241,7 @@
     <nav>
       <button class="active" data-view="countdown">Countdown</button>
       <button data-view="world">World Clock</button>
+      <button data-view="sessions">Sessions</button>
     </nav>
 
     <!-- COUNTDOWN VIEW -->
@@ -218,6 +293,39 @@
         </div>
       </div>
     </section>
+    <section id="view-sessions" class="view">
+      <div class="card" style="max-width: 720px">
+        <h1>Market Sessions</h1>
+        <div class="subtitle">Liquidity & timing context</div>
+
+        <!-- SESSION TIMELINE -->
+        <div class="timeline">
+          <div class="session asia">Asia</div>
+          <div class="session london">London</div>
+          <div class="session ny">New York</div>
+          <div class="now-marker" id="now-marker"></div>
+        </div>
+
+        <!-- KILL ZONES -->
+        <div class="killzones">
+          <div id="kz-london" class="kz">
+            London Kill Zone
+            <span class="kz-status"></span>
+          </div>
+          <div id="kz-ny" class="kz">
+            NY Kill Zone
+            <span class="kz-status"></span>
+          </div>
+        </div>
+
+        <!-- NEXT OPEN -->
+        <div class="next-open">
+          <div class="label">Next major open</div>
+          <div class="value" id="next-open-name"></div>
+          <div class="time" id="next-open-countdown"></div>
+        </div>
+      </div>
+    </section>
 
     <script>
       /* NAV SWITCHING */
@@ -225,6 +333,7 @@
       const views = {
         countdown: document.getElementById("view-countdown"),
         world: document.getElementById("view-world"),
+        sessions: document.getElementById("view-sessions"),
       };
 
       buttons.forEach((btn) => {
@@ -300,6 +409,113 @@
 
       setInterval(updateClocks, 1000);
       updateClocks();
+
+      /* SESSIONS & KILL ZONES */
+      const sessions = [
+        // these are UTC start hours used for the "next open" calc (keeps it simple)
+        { name: "Asia", start: 0, end: 8 },
+        { name: "London", start: 8, end: 16 },
+        { name: "New York", start: 13, end: 21 },
+      ];
+
+      // helper: get hour/minute/second for a timezone from a given Date
+      function getTimePartsForZone(date, timeZone) {
+        const fmt = new Intl.DateTimeFormat("en-US", {
+          timeZone,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hourCycle: "h23", // 0-23
+        });
+        const parts = fmt.formatToParts(date);
+        let hour = 0,
+          minute = 0,
+          second = 0;
+        for (const p of parts) {
+          if (p.type === "hour") hour = parseInt(p.value, 10);
+          if (p.type === "minute") minute = parseInt(p.value, 10);
+          if (p.type === "second") second = parseInt(p.value, 10);
+        }
+        return { hour, minute, second };
+      }
+
+      // read optional test time from URL (ISO-like string). Example: ?test=2026-02-05T13:31:00Z
+      const urlParams = new URLSearchParams(window.location.search);
+      const testParam = urlParams.get("test");
+      const testDate = testParam ? new Date(testParam) : null;
+
+      function updateSessions() {
+        const now = testDate || new Date();
+
+        // UTC fractional hour for timeline marker and next-open calc
+        const nowUTC = new Date(
+          now.getTime() + now.getTimezoneOffset() * 60000,
+        );
+        const utcHourFloat =
+          nowUTC.getUTCHours() +
+          nowUTC.getUTCMinutes() / 60 +
+          nowUTC.getUTCSeconds() / 3600;
+
+        // Timeline marker across 24h (left percent)
+        const marker = document.getElementById("now-marker");
+        if (marker) {
+          marker.style.left = (utcHourFloat / 24) * 100 + "%";
+        }
+
+        // --- Killzones using local times per market (handles DST) ---
+        // NY killzone: 09:30 - 09:45 America/New_York
+        const nyParts = getTimePartsForZone(now, "America/New_York");
+        const nyMinutesOfDay = nyParts.hour * 60 + nyParts.minute;
+        const nyKZStart = 9 * 60 + 30; // 9:30
+        const nyKZEnd = 9 * 60 + 45; // 9:45
+        const nyKZ = nyMinutesOfDay >= nyKZStart && nyMinutesOfDay < nyKZEnd;
+
+        // London killzone: (example) 07:00 - 09:00 Europe/London (adjust if you want different)
+        const ldnParts = getTimePartsForZone(now, "Europe/London");
+        const ldnMinutesOfDay = ldnParts.hour * 60 + ldnParts.minute;
+        const ldnKZStart = 7 * 60; // 07:00
+        const ldnKZEnd = 9 * 60; // 09:00
+        const ldnKZ =
+          ldnMinutesOfDay >= ldnKZStart && ldnMinutesOfDay < ldnKZEnd;
+
+        document.getElementById("kz-london").classList.toggle("active", ldnKZ);
+        document.getElementById("kz-ny").classList.toggle("active", nyKZ);
+
+        // (Optional) show human-readable times in the .kz-status spans
+        const kzLondonStatus = document.querySelector("#kz-london .kz-status");
+        const kzNYStatus = document.querySelector("#kz-ny .kz-status");
+        if (kzLondonStatus) {
+          kzLondonStatus.textContent = ldnKZ
+            ? " · active"
+            : ` · ${String(ldnKZStart / 60).padStart(2, "0")}:00–${String(ldnKZEnd / 60).padStart(2, "0")}:00`;
+        }
+        if (kzNYStatus) {
+          kzNYStatus.textContent = nyKZ ? " · active" : ` · 09:30–09:45`;
+        }
+
+        // --- Next major open (UTC-anchored simple approach) ---
+        // We keep sessions[].start as UTC hour anchors to keep logic simple and DST-safe for the "next open" cue.
+        const upcoming =
+          sessions.find((s) => utcHourFloat < s.start) || sessions[0];
+        let nextStart = upcoming.start;
+        if (utcHourFloat >= upcoming.start) nextStart += 24; // tomorrow
+
+        const diffHours = nextStart - utcHourFloat;
+        const diffMs = Math.round(diffHours * 3600000);
+        // format hh:mm:ss from ms remaining (safe for <24h)
+        const pad = (n) => String(n).padStart(2, "0");
+        const h = Math.floor(diffMs / 3600000);
+        const m = Math.floor((diffMs % 3600000) / 60000);
+        const s = Math.floor((diffMs % 60000) / 1000);
+
+        document.getElementById("next-open-name").textContent = upcoming.name;
+        document.getElementById("next-open-countdown").textContent =
+          `${pad(h)}:${pad(m)}:${pad(s)}`;
+      }
+
+      // run every second
+      setInterval(updateSessions, 1000);
+      updateSessions();
     </script>
   </body>
 </html>
